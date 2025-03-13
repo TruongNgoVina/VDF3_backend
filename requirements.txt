@@ -1,0 +1,15 @@
+# requirements.txt (cập nhật)
+fastapi
+pydantic
+uvicorn
+opencv-python
+Pillow
+numpy
+pytest
+flake8
+black
+#torch  # Nếu dùng PyTorch (YOLOv8 phụ thuộc vào PyTorch)
+#torchvision  # Nếu xử lý hình ảnh
+python-dotenv  # Để load .env
+#ultralytics  # Thêm YOLOv8
+python-multipart
