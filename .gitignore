@@ -1,0 +1,20 @@
+# Bỏ qua thư mục môi trường ảo
+.venv/
+venv/
+
+# Bỏ qua các file tạm của Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Bỏ qua các file tạm của IDE
+.idea/  # Nếu bạn dùng PyCharm
+*.iml
+
+# Bỏ qua các file hệ thống
+.DS_Store  # Nếu bạn dùng macOS
+Thumbs.db  # Nếu bạn dùng Windows
+
+# Bỏ qua các file môi trường
+.env
