@@ -8,6 +8,64 @@ import logging
 # Thiết lập logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+def find_rois_threshold(image: np.ndarray, edges: np.ndarray, template_shape: tuple, config: dict) -> list:
+    """
+    Tìm các vùng ROI dựa trên thresholding và contours.
+
+    Args:
+        image (np.ndarray): Ảnh gốc ở định dạng grayscale.
+        edges (np.ndarray): Ảnh biên (không dùng trong phiên bản này, giữ để tương thích).
+        template_shape (tuple): Kích thước của template (height, width).
+        config (dict): Cấu hình tham số.
+
+    Returns:
+        list: Danh sách các ROI (top_left, bottom_right).
+    """
+    height, width = template_shape
+    min_area_threshold = config['min_area_ratio'] * height * width
+    min_size = min(image.shape[0], image.shape[1]) * config['min_contour_size_ratio']
+
+    # Tính độ sáng trung bình để xác định nền sáng hay tối
+    mean_intensity = np.mean(image)
+
+    # Làm mịn ảnh để giảm nhiễu
+    blurred = cv2.GaussianBlur(image, (5, 5), 0)
+
+    # Áp dụng thresholding dựa trên nền sáng hoặc tối
+    if mean_intensity > 127:
+        # Nền sáng: Lấy đối tượng tối
+        _, binary_mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    else:
+        # Nền tối: Lấy đối tượng sáng
+        _, binary_mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Đóng các vùng đứt để cải thiện contours
+    kernel = np.ones((3, 3), np.uint8)
+    binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    # Tìm contours trong mask nhị phân
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    rois = []
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area > min_size:
+            x, y, w, h = cv2.boundingRect(contour)
+            expand = max(config['roi_min_expand'], int(max(w, h) * config['roi_expand_ratio']))
+            top_left = (max(0, x - expand), max(0, y - expand))
+            bottom_right = (min(image.shape[1], x + w + expand), min(image.shape[0], y + h + expand))
+            width_roi = bottom_right[0] - top_left[0]
+            height_roi = bottom_right[1] - top_left[1]
+
+            # Lọc ROI dựa trên kích thước template
+            if height_roi * width_roi >= min_area_threshold:
+                # Kiểm tra thêm: ROI phải đủ lớn để chứa template
+                if width_roi >= width and height_roi >= height:
+                    rois.append((top_left, bottom_right))
+
+    logging.info(f"Tìm thấy {len(rois)} ROIs. Using threshold")
+    return rois
+
 # Cấu hình mặc định với các giá trị gán cứng từ code test
 CONFIG = {
     'clahe_clip_limit': 2.0,
@@ -102,6 +160,7 @@ def process_template_matching(image_bytes: bytes,
     kernel = np.ones(CONFIG['morph_kernel_size'], np.uint8)
     edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
 
+
     # Chuẩn bị ảnh cho matching
     if edge_base:
         v = np.median(template_rgb)
@@ -116,45 +175,26 @@ def process_template_matching(image_bytes: bytes,
         img = img_gray
         temp = template_gray
 
-    # Tìm ROIs
-    height, width = temp.shape[:2]
-    min_area_threshold = CONFIG['min_area_ratio'] * height * width
-    min_size = min(img_gray.shape[0], img_gray.shape[1]) * CONFIG['min_contour_size_ratio']
+    rois = find_rois_threshold(img, edges, template_gray.shape, CONFIG)
 
-    # Xử lý tương thích với các phiên bản OpenCV
-    if cv2.__version__.startswith('3'):
-        _, contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    else:
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # # Song song hóa xử lý ROIs
+    # all_points_list = []
+    # if rois:
+    #     with ProcessPoolExecutor(max_workers=1) as executor:  # Giữ max_workers=1 như code test
+    #         process_func = partial(
+    #             process_roi,
+    #             img=img,
+    #             template=temp,
+    #             threshold=threshold
+    #         )
+    #         results = executor.map(process_func, rois)
+    #         for points in results:
+    #             all_points_list.extend(points)
 
-    rois = []
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area > min_size:
-            x, y, w, h = cv2.boundingRect(contour)
-            expand = max(CONFIG['roi_min_expand'], int(max(w, h) * CONFIG['roi_expand_ratio']))
-            top_left = (max(0, x - expand), max(0, y - expand))
-            bottom_right = (min(img_gray.shape[1], x + w + expand), min(img_gray.shape[0], y + h + expand))
-            width_roi = bottom_right[0] - top_left[0]
-            height_roi = bottom_right[1] - top_left[1]
-            if height_roi * width_roi >= min_area_threshold:
-                rois.append((top_left, bottom_right))
-
-    logging.info(f"Tìm thấy {len(rois)} ROIs")
-
-    # Song song hóa xử lý ROIs
     all_points_list = []
-    if rois:
-        with ProcessPoolExecutor(max_workers=1) as executor:  # Giữ max_workers=1 như code test
-            process_func = partial(
-                process_roi,
-                img=img,
-                template=temp,
-                threshold=threshold
-            )
-            results = executor.map(process_func, rois)
-            for points in results:
-                all_points_list.extend(points)
+    for roi in rois:
+        points = process_roi(roi, img, temp, threshold)
+        all_points_list.extend(points)
 
     # Chuẩn bị kết quả trả về
     matches = []

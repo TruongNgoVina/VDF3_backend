@@ -263,14 +263,14 @@ def invariant_match_template(img_gray, template_gray, method, matched_thresh, ro
 
             scales = range(scale_min, scale_max, scale_interval)
 
-            # Bước 1: Lưới thô 40 độ
+            # Bước 1: Lưới thô 35 độ
             coarse_rot_interval_1 = 35
             coarse_angles_1 = range(rot_range[0], rot_range[1], coarse_rot_interval_1)
             coarse_tasks_1 = [(angle, scale, current_img, template_gray, method, matched_thresh, level, image_maxwh)
                               for angle in coarse_angles_1 for scale in scales]
 
             coarse_points_1 = []
-            with ThreadPoolExecutor() as executor:
+            with ThreadPoolExecutor(max_workers=20) as executor:
                 futures = [executor.submit(match_single_rotation_scale_minmax, task) for task in coarse_tasks_1]
                 for future in as_completed(futures):
                     point = future.result()
@@ -286,7 +286,7 @@ def invariant_match_template(img_gray, template_gray, method, matched_thresh, ro
                 best_coarse_point_1 = coarse_points_1[0]
                 best_angle_1 = best_coarse_point_1[1]  # Góc tốt nhất từ lưới 40 độ
 
-                # Bước 2: Lưới thô 10 độ quanh best_angle_1 ±40 độ
+                # Bước 2: Lưới thô 20 độ quanh best_angle_1 ±35 độ
                 coarse_angle_start_2 = max(rot_range[0], best_angle_1 - 20)
                 coarse_angle_end_2 = min(rot_range[1], best_angle_1 + 20)
                 coarse_rot_interval_2 = 10
@@ -295,7 +295,7 @@ def invariant_match_template(img_gray, template_gray, method, matched_thresh, ro
                                   for angle in coarse_angles_2 for scale in scales]
 
                 coarse_points_2 = []
-                with ThreadPoolExecutor(max_workers=None) as executor:
+                with ThreadPoolExecutor(max_workers=10) as executor:
                     futures = [executor.submit(match_single_rotation_scale_minmax, task) for task in coarse_tasks_2]
                     for future in as_completed(futures):
                         point = future.result()
@@ -311,14 +311,14 @@ def invariant_match_template(img_gray, template_gray, method, matched_thresh, ro
                     best_coarse_point_2 = coarse_points_2[0]
                     best_angle_2 = best_coarse_point_2[1]  # Góc tốt nhất từ lưới 10 độ
 
-                    # Bước 3: Lưới tinh 1 độ quanh best_angle_2 ±10 độ
+                    # Bước 3: Lưới tinh 1 độ quanh best_angle_2 ±5 độ
                     fine_angle_start = max(rot_range[0], best_angle_2 - 5)
                     fine_angle_end = min(rot_range[1], best_angle_2 + 5)
                     fine_angles = np.arange(fine_angle_start, fine_angle_end, 1)
                     fine_tasks = [(angle, scale, current_img, template_gray, method, matched_thresh, level, image_maxwh)
                                   for angle in fine_angles for scale in scales]
 
-                    with ThreadPoolExecutor() as executor:
+                    with ThreadPoolExecutor(max_workers=4) as executor:
                         futures = [executor.submit(match_single_rotation_scale_minmax, task) for task in fine_tasks]
                         for future in as_completed(futures):
                             point = future.result()
@@ -378,6 +378,8 @@ def invariant_match_template(img_gray, template_gray, method, matched_thresh, ro
         return color_filtered_list
     # print(f"Time per ROI: {time.time() - start_time}s")
     return points_list
+
+
 
 
 
