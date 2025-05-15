@@ -2,8 +2,26 @@ import cv2
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
+from shapely.geometry import Polygon
+from shapely.affinity import rotate, scale
 from utils.InvariantTM import invariant_match_template, auto_canny
 import logging
+
+# Cấu hình mặc định với các giá trị gán cứng từ code test
+CONFIG = {
+    'clahe_clip_limit': 2.0,
+    'clahe_tile_grid_size': (8, 8),
+    'canny_sigma': 0.33,
+    'morph_kernel_size': (3, 3),
+    'min_area_ratio': 0.7,
+    'min_contour_size_ratio': 0.4,
+    'roi_expand_ratio': 0.03,
+    'roi_min_expand': 15,
+    'rotation_range': [-180, 180],
+    'rotation_interval': 1,
+    'scale_range': [100, 101],
+    'scale_interval': 1,
+}
 
 # Thiết lập logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -66,22 +84,6 @@ def find_rois_threshold(image: np.ndarray, edges: np.ndarray, template_shape: tu
     logging.info(f"Tìm thấy {len(rois)} ROIs. Using threshold")
     return rois
 
-# Cấu hình mặc định với các giá trị gán cứng từ code test
-CONFIG = {
-    'clahe_clip_limit': 2.0,
-    'clahe_tile_grid_size': (8, 8),
-    'canny_sigma': 0.33,
-    'morph_kernel_size': (3, 3),
-    'min_area_ratio': 0.7,
-    'min_contour_size_ratio': 0.4,
-    'roi_expand_ratio': 0.03,
-    'roi_min_expand': 15,
-    'rotation_range': [-180, 180],
-    'rotation_interval': 1,
-    'scale_range': [100, 101],
-    'scale_interval': 1,
-}
-
 def process_roi(roi_info: tuple, img: np.ndarray, template: np.ndarray, threshold: float) -> list:
     """Xử lý template matching cho một ROI."""
     top_left, bottom_right = roi_info
@@ -130,9 +132,22 @@ def process_roi(roi_info: tuple, img: np.ndarray, template: np.ndarray, threshol
 def process_template_matching(image_bytes: bytes,
                              template_bytes: bytes,
                              threshold: float = 0.4,
-                             edge_base: bool = True) -> dict:
+                             edge_base: bool = True,
+                             check_overlap: bool = False) -> dict:
     """
     Perform invariant template matching with preprocessing, ROI extraction, and parallel processing.
+    Returns matches with an additional 'overlapped' field indicating if the match's bounding box overlaps with others,
+    only if check_overlap is True.
+
+    Args:
+        image_bytes (bytes): Bytes của ảnh gốc.
+        template_bytes (bytes): Bytes của template.
+        threshold (float): Ngưỡng khớp mẫu.
+        edge_base (bool): Sử dụng ảnh biên nếu True, ảnh grayscale nếu False.
+        check_overlap (bool): Kiểm tra chồng lấn giữa các hình chữ nhật chính nếu True.
+
+    Returns:
+        dict: Kết quả với số lượng matches và danh sách matches, mỗi match có trường overlapped.
     """
     # Chuyển bytes thành mảng NumPy
     image_array = np.frombuffer(image_bytes, np.uint8)
@@ -147,7 +162,6 @@ def process_template_matching(image_bytes: bytes,
         raise ValueError("Cannot decode template file")
     template_rgb = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2RGB)
 
-
     # Tiền xử lý ảnh
     img_gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
     template_gray = cv2.cvtColor(template_rgb, cv2.COLOR_RGB2GRAY)
@@ -159,7 +173,6 @@ def process_template_matching(image_bytes: bytes,
     edges = auto_canny(clahe_image, sigma=CONFIG['canny_sigma'])
     kernel = np.ones(CONFIG['morph_kernel_size'], np.uint8)
     edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-
 
     # Chuẩn bị ảnh cho matching
     if edge_base:
@@ -175,44 +188,97 @@ def process_template_matching(image_bytes: bytes,
         img = img_gray
         temp = template_gray
 
+    # Tìm ROIs
     rois = find_rois_threshold(img, edges, template_gray.shape, CONFIG)
 
-    # # Song song hóa xử lý ROIs
-    # all_points_list = []
-    # if rois:
-    #     with ProcessPoolExecutor(max_workers=1) as executor:  # Giữ max_workers=1 như code test
-    #         process_func = partial(
-    #             process_roi,
-    #             img=img,
-    #             template=temp,
-    #             threshold=threshold
-    #         )
-    #         results = executor.map(process_func, rois)
-    #         for points in results:
-    #             all_points_list.extend(points)
-
+    # Xử lý từng ROI (tạm thời bỏ song song hóa để đơn giản hóa)
     all_points_list = []
     for roi in rois:
         points = process_roi(roi, img, temp, threshold)
         all_points_list.extend(points)
 
-    # Chuẩn bị kết quả trả về
-    matches = []
+    # Kiểm tra chồng lấn giữa các hình chữ nhật chính
+    height, width = template_gray.shape
+    rectangles = []
     for point_info in all_points_list:
-        point, angle, scale, score = point_info
-        match_info = {
-            "x": int(point[0]),
-            "y": int(point[1]),
-            "angle": float(angle),
-            "scale": float(scale),
-            "score": round(float(score), 3)
+        point = point_info[0]
+        angle = point_info[1]
+        scale_factor = point_info[2] / 100  # Chuyển từ phần trăm sang tỷ lệ
+        score = point_info[3]
+
+        # Tính toán tọa độ 4 góc của hình chữ nhật
+        w_scaled = width * scale_factor
+        h_scaled = height * scale_factor
+        center_x = point[0] + w_scaled / 2
+        center_y = point[1] + h_scaled / 2
+
+        # Tạo Polygon cho hình chữ nhật
+        rect_points = [
+            (point[0], point[1]),  # Góc trên trái
+            (point[0] + w_scaled, point[1]),  # Góc trên phải
+            (point[0] + w_scaled, point[1] + h_scaled),  # Góc dưới phải
+            (point[0], point[1] + h_scaled)  # Góc dưới trái
+        ]
+        poly = Polygon(rect_points)
+        # poly = scale(poly, xfact=1, yfact=1, origin=(point[0], point[1]))
+        poly = rotate(poly, angle, origin=(center_x, center_y), use_radians=False)
+        rectangles.append((poly, point, angle, scale_factor, score))
+
+        # Kiểm tra chồng lấn giữa các hình chữ nhật chính (nếu check_overlap=True)
+        overlapping = set()
+        if check_overlap:
+            height, width = template_gray.shape
+            rectangles = []
+            for point_info in all_points_list:
+                point = point_info[0]
+                angle = point_info[1]
+                scale_factor = point_info[2] / 100  # Chuyển từ phần trăm sang tỷ lệ
+                score = point_info[3]
+
+                # Tính toán tọa độ 4 góc của hình chữ nhật
+                w_scaled = width * scale_factor
+                h_scaled = height * scale_factor
+                center_x = point[0] + w_scaled / 2
+                center_y = point[1] + h_scaled / 2
+
+                # Tạo Polygon cho hình chữ nhật
+                rect_points = [
+                    (point[0], point[1]),  # Góc trên trái
+                    (point[0] + w_scaled, point[1]),  # Góc trên phải
+                    (point[0] + w_scaled, point[1] + h_scaled),  # Góc dưới phải
+                    (point[0], point[1] + h_scaled)  # Góc dưới trái
+                ]
+                poly = Polygon(rect_points)
+                # poly = scale(poly, xfact=1, yfact=1, origin=(point[0], point[1]))
+                poly = rotate(poly, angle, origin=(center_x, center_y), use_radians=False)
+                rectangles.append((poly, point, angle, scale_factor, score))
+
+            # Kiểm tra chồng lấn
+            for i, (poly1, _, _, _, _) in enumerate(rectangles):
+                for j, (poly2, _, _, _, _) in enumerate(rectangles):
+                    if i < j and poly1.intersects(poly2) and not poly1.touches(poly2):
+                        overlapping.add(i)
+                        overlapping.add(j)
+
+        # Chuẩn bị kết quả trả về
+        matches = []
+        for i, point_info in enumerate(all_points_list):
+            point, angle, scale, score = point_info
+            match_info = {
+                "x": int(point[0]),
+                "y": int(point[1]),
+                "angle": float(angle),
+                "scale": float(scale),
+                "score": round(float(score), 3),
+                "overlapped": i in overlapping if check_overlap else False  # Thêm trường overlapped
+            }
+            matches.append(match_info)
+
+        result = {
+            "count": len(matches),
+            "matches": matches
         }
-        matches.append(match_info)
 
-    result = {
-        "count": len(matches),
-        "matches": matches
-    }
+        logging.info(f"Số lượng matches: {len(matches)}")
+        return result
 
-    logging.info(f"Số lượng matches: {len(matches)}")
-    return result

@@ -13,7 +13,8 @@ async def match_template(
     image: UploadFile = File(..., description="The larger image to search in (JPEG/PNG)"),
     template: UploadFile = File(..., description="The template image to match (JPEG/PNG)"),
     threshold: float = 0.4,
-    edge_base: bool = True
+    edge_base: bool = True,
+    check_overlap: bool = False
 ):
     """
     Upload an image and a template image, then perform invariant template matching.
@@ -24,6 +25,7 @@ async def match_template(
         template: The template image file to match.
         threshold: Similarity threshold for matching (0.0 to 1.0, default: 0.4).
         edge_base: Whether to use edge-based matching (default: True).
+        check_overlap (bool): Kiểm tra chồng lấn giữa các hình chữ nhật chính nếu True.
 
     Returns:
         dict: {"count": int, "matches": list of match details}
@@ -59,7 +61,8 @@ async def match_template(
             image_bytes=image_bytes,
             template_bytes=template_bytes,
             threshold=threshold,
-            edge_base=edge_base
+            edge_base=edge_base,
+            check_overlap=check_overlap
         )
     except Exception as e:
         logging.error(f"Template matching failed: {str(e)}")
